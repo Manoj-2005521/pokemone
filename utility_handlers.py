@@ -22,58 +22,189 @@ from utility_helpers import (
 
 
 async def send_wikipedia(message: Message, api: PokeAPI, query: str) -> None:
-    url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + quote(query, safe="")
+    # Try exact query first, then fuzzy search fallback
+    url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + quote(query.replace(" ", "_"), safe="")
     data = await api.get(url)
     if not data or data.get("type", "").endswith("/not_found"):
-        await message.reply_text("❌ No Wikipedia page found.")
-        return
+        # Try Wikipedia's search API to find the closest article
+        search_url = "https://en.wikipedia.org/w/api.php?" + urlencode({
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "srlimit": 1,
+            "format": "json",
+        })
+        search_data = await api.get(search_url)
+        best = ((search_data or {}).get("query", {}).get("search") or [None])[0]
+        if not best:
+            await message.reply_text(
+                "❌ No Wikipedia article found for <b>" + esc(query) + "</b>.\nTry rephrasing your search.",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        slug = best["title"].replace(" ", "_")
+        url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + quote(slug, safe="")
+        data = await api.get(url)
+        if not data or data.get("type", "").endswith("/not_found"):
+            await message.reply_text("❌ Could not load Wikipedia article.", parse_mode=ParseMode.HTML)
+            return
 
     title, extract, page, thumbnail = wiki_summary_parts(data, query)
     title = title[:120]
-    text = f"<b>📚 {esc(title)}</b>\n\n{esc(extract)}"
+
+    # Build richer description — up to 900 chars, ending on a sentence boundary
+    if len(extract) > 900:
+        truncated = extract[:897]
+        last_dot = truncated.rfind(". ")
+        if last_dot > 400:
+            extract = truncated[:last_dot + 1]
+        else:
+            extract = truncated.rstrip() + "…"
+
+    # Get the page description (short subtitle) if available
+    description = (data.get("description") or "").strip()
+
+    lines = [f"📚 <b>{esc(title)}</b>"]
+    if description:
+        lines.append(f"<i>{esc(description.capitalize())}</i>")
+    lines.append("")
+    lines.append(esc(extract))
+
+    # Reading time estimate
+    word_count = len(extract.split())
+    read_sec = max(1, round(word_count / 4))
+    read_label = f"{read_sec // 60}m {read_sec % 60}s" if read_sec >= 60 else f"{read_sec}s"
     if page:
-        text += f'\n\n<a href="{esc(page)}">Open Wikipedia</a>'
+        lines.append("\n⏱ ~" + read_label + " read  •  🌍 <a href=\"" + esc(page) + "\">Open full article</a>")
+    else:
+        lines.append("\n⏱ ~" + read_label + " read")
+
+    text = "\n".join(lines)
+
     if thumbnail:
         await message.reply_photo(photo=thumbnail, caption=text, parse_mode=ParseMode.HTML)
     else:
         await message.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
+# Part-of-speech emoji map
+_POS_EMOJI = {
+    "noun": "🔵", "verb": "🟢", "adjective": "🟡", "adverb": "🟠",
+    "pronoun": "🟣", "preposition": "⚪", "conjunction": "🔴",
+    "interjection": "❗", "exclamation": "❗", "abbreviation": "📌",
+}
+
+
 async def send_definition(message: Message, api: PokeAPI, word: str) -> None:
-    url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{quote(word, safe='')}"
+    clean_word = word.strip().lower()
+    url = f"https://api.dictionaryapi.dev/api/v2/entries/en/{quote(clean_word, safe='')}"
     data = await api.get(url)
-    if not isinstance(data, list) or not data:
-        fallback_url = "https://en.wiktionary.org/w/api.php?" + urlencode({
-            "action": "query",
-            "format": "json",
-            "prop": "extracts",
-            "explaintext": 1,
-            "redirects": 1,
-            "titles": word,
-        })
-        fallback = wiktionary_english_extract(await api.get(fallback_url))
-        if fallback is None:
-            await message.reply_text("❌ No definition found, or dictionary services are unavailable.")
-            return
-        title, extract = fallback
-        await message.reply_text(f"📖 {title} (Wiktionary)\n\n{extract[:3800]}")
+
+    # ── Primary: Free Dictionary API ─────────────────────────────────────────
+    if isinstance(data, list) and data:
+        entry = data[0]
+
+        # Phonetic: prefer text that starts with /
+        phonetics = entry.get("phonetics") or []
+        phonetic = next(
+            (p.get("text") for p in phonetics if (p.get("text") or "").startswith("/")),
+            next((p.get("text") for p in phonetics if p.get("text")), ""),
+        )
+        audio_url = next(
+            (p.get("audio") for p in phonetics if p.get("audio")), None
+        )
+
+        # Origin
+        origin = (entry.get("origin") or "").strip()
+
+        # Build header
+        header = f"📖 <b>{esc(clean_word.title())}</b>"
+        if phonetic:
+            header += f"  <code>{esc(phonetic)}</code>"
+
+        sections = [header]
+        if origin:
+            sections.append(f"<i>Origin: {esc(origin[:200])}</i>")
+
+        # Meanings — up to 4, up to 2 defs each
+        for meaning in entry.get("meanings", [])[:4]:
+            pos = meaning.get("partOfSpeech", "")
+            emoji = _POS_EMOJI.get(pos, "•")
+            defs = meaning.get("definitions", [])
+            if not defs:
+                continue
+            block = [f"{emoji} <b>{esc(pos.capitalize())}</b>"]
+            for i, defn in enumerate(defs[:2], 1):
+                def_text = (defn.get("definition") or "").strip()[:350]
+                block.append(f"  {i}. {esc(def_text)}")
+                example = (defn.get("example") or "").strip()[:180]
+                if example:
+                    block.append(f'     <i>"{esc(example)}"</i>')
+                syns = [esc(s) for s in (defn.get("synonyms") or [])[:4]]
+                ants = [esc(a) for a in (defn.get("antonyms") or [])[:4]]
+                if syns:
+                    block.append(f"     ✅ Synonyms: {', '.join(syns)}")
+                if ants:
+                    block.append(f"     ❌ Antonyms: {', '.join(ants)}")
+            sections.append("\n".join(block))
+
+        # Top-level synonyms / antonyms
+        all_syns = list(dict.fromkeys(
+            s for m in entry.get("meanings", [])
+            for s in (m.get("synonyms") or [])
+        ))[:6]
+        all_ants = list(dict.fromkeys(
+            a for m in entry.get("meanings", [])
+            for a in (m.get("antonyms") or [])
+        ))[:6]
+        if all_syns:
+            sections.append(f"✅ <b>Synonyms:</b> {esc(', '.join(all_syns))}")
+        if all_ants:
+            sections.append(f"❌ <b>Antonyms:</b> {esc(', '.join(all_ants))}")
+
+        # Footer
+        wik_link = f'https://en.wiktionary.org/wiki/{quote(clean_word, safe="")}'
+        sections.append(f'📎 <a href="{wik_link}">View on Wiktionary</a>')
+
+        text = "\n\n".join(sections)
+        await message.reply_text(text[:4000], parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+
+        # Send audio pronunciation as a voice note if available
+        if audio_url:
+            try:
+                await message.reply_voice(
+                    voice=audio_url,
+                    caption=f"🔊 Pronunciation: <b>{esc(clean_word.title())}</b>",
+                    parse_mode=ParseMode.HTML,
+                )
+            except Exception:
+                pass
         return
 
-    entry = data[0]
-    phonetic = next((item.get("text") for item in entry.get("phonetics", []) if item.get("text")), "")
-    lines = []
-    for meaning in entry.get("meanings", [])[:3]:
-        definitions = meaning.get("definitions", [])
-        if not definitions:
-            continue
-        definition = definitions[0]
-        line = f"• <b>{esc(meaning.get('partOfSpeech', ''))}</b>: {esc(definition.get('definition', '')[:300])}"
-        example = definition.get("example")
-        if example:
-            line += f"\n  <i>Example:</i> {esc(example[:180])}"
-        lines.append(line)
-    text = f"<b>📖 {esc(word.title())}</b> {esc(phonetic)}\n\n" + ("\n\n".join(lines) or "No definition text available.")
-    await message.reply_text(text[:3900], parse_mode=ParseMode.HTML)
+    # ── Fallback: Wiktionary ─────────────────────────────────────────────────
+    fallback_url = "https://en.wiktionary.org/w/api.php?" + urlencode({
+        "action": "query",
+        "format": "json",
+        "prop": "extracts",
+        "explaintext": 1,
+        "redirects": 1,
+        "titles": clean_word,
+    })
+    fallback = wiktionary_english_extract(await api.get(fallback_url))
+    if fallback is None:
+        await message.reply_text(
+            "No definition found for <b>" + esc(clean_word.title()) + "</b>.\nCheck your spelling, or try /wiki for an encyclopaedia entry.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+    title, extract = fallback
+    wik_link = f'https://en.wiktionary.org/wiki/{quote(clean_word, safe="")}'
+    text = (
+        f"📖 <b>{esc(title.title())}</b>  <i>(via Wiktionary)</i>\n\n"
+        f"{esc(extract[:1800])}\n\n"
+        f'📎 <a href="{wik_link}">View on Wiktionary</a>'
+    )
+    await message.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
 
 
 async def send_quote(message: Message, api: PokeAPI) -> None:
