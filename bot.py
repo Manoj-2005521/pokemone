@@ -269,7 +269,8 @@ def persistent_reply_kb() -> ReplyKeyboardMarkup:
             [KeyboardButton("🌿 Catch Wild"), KeyboardButton("⚔️ Battle Arena")],
             [KeyboardButton("📦 My Box"), KeyboardButton("🎒 Bag & Shop")],
             [KeyboardButton("🏆 Gym Badges"), KeyboardButton("❓ Who's That Pokémon")],
-            [KeyboardButton("🌦️ Weather"), KeyboardButton("📜 Menu & Help")],
+            [KeyboardButton("🌌 Pic of the Day"), KeyboardButton("🌦️ Weather")],
+            [KeyboardButton("🧰 Utilities"), KeyboardButton("📜 Menu & Help")],
         ],
         resize_keyboard=True,
     )
@@ -294,7 +295,11 @@ def welcome_menu_kb() -> InlineKeyboardMarkup:
             InlineKeyboardButton("🤝 Trade", callback_data="menu|trade"),
         ],
         [
+            InlineKeyboardButton("🌌 Pic of the Day", callback_data="utils|space"),
             InlineKeyboardButton("🌦️ Weather", callback_data="utils|weather"),
+        ],
+        [
+            InlineKeyboardButton("🧰 All Utilities", callback_data="menu|utils"),
             InlineKeyboardButton("🎮 All Pokémon Features", callback_data="menu|pokemon"),
         ],
     ])
@@ -370,21 +375,21 @@ def pokemon_menu_kb() -> InlineKeyboardMarkup:
 def utils_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
+            InlineKeyboardButton("🌌 Pic of the Day", callback_data="utils|space"),
+            InlineKeyboardButton("🌦️ Weather", callback_data="utils|weather"),
+        ],
+        [
+            InlineKeyboardButton("💬 Daily Quote", callback_data="utils|quote"),
+            InlineKeyboardButton("💡 Random Fact", callback_data="utils|fact"),
+        ],
+        [
             InlineKeyboardButton("📚 Wikipedia", callback_data="utils|wiki"),
             InlineKeyboardButton("📖 Dictionary", callback_data="utils|define"),
         ],
         [
-            InlineKeyboardButton("💬 Quote", callback_data="utils|quote"),
-            InlineKeyboardButton("🧠 Fact", callback_data="utils|fact"),
-        ],
-        [
-            InlineKeyboardButton("🚀 Space (APOD)", callback_data="utils|space"),
             InlineKeyboardButton("💱 FX Convert", callback_data="utils|fx"),
         ],
-        [
-            InlineKeyboardButton("🌦️ Weather", callback_data="utils|weather"),
-        ],
-        [InlineKeyboardButton("🏠 Back to Menu", callback_data="menu|home")],
+        [InlineKeyboardButton("🏠 Back to Main Menu", callback_data="menu|home")],
     ])
 
 
@@ -2537,10 +2542,19 @@ async def text_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         "🎒 Bag & Shop": bag_cmd,
         "🏆 Gym Badges": gym_cmd,
         "❓ Who's That Pokémon": wtp_cmd,
+        "🌌 Pic of the Day": space_cmd,
         "📜 Menu & Help": menu_cmd,
     }
     if text in reply_btn_map:
         await reply_btn_map[text](update, context)
+        return
+
+    if text == "🧰 Utilities":
+        await message.reply_text(
+            "<b>🧰 Utilities Hub</b>\nChoose a tool below:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=utils_menu_kb(),
+        )
         return
 
     if text == "🌦️ Weather":
@@ -2815,6 +2829,8 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("quote", quote_cmd))
     app.add_handler(CommandHandler("fact", fact_cmd))
     app.add_handler(CommandHandler("space", space_cmd))
+    app.add_handler(CommandHandler("apod", space_cmd))
+    app.add_handler(CommandHandler("pic", space_cmd))
     app.add_handler(CommandHandler("fx", fx_cmd))
     app.add_handler(CommandHandler("weather", weather_cmd))
     app.add_handler(CommandHandler("generation", generation_cmd))
