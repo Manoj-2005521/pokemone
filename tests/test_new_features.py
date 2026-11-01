@@ -367,6 +367,58 @@ class TradeAndWtpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Bulbasaur", call_text)
 
 
+
+
+class WeatherImprovementTests(unittest.IsolatedAsyncioTestCase):
+    def test_weather_description_handles_types(self):
+        from utility_helpers import weather_description
+        self.assertEqual(weather_description(0), "Clear sky")
+        self.assertEqual(weather_description("0"), "Clear sky")
+        self.assertEqual(weather_description(0.0), "Clear sky")
+        self.assertEqual(weather_description(95), "Thunderstorm")
+        self.assertEqual(weather_description("95"), "Thunderstorm")
+        self.assertIn("Unknown condition", weather_description("not_a_code"))
+
+    async def test_send_weather_with_hint_resolution(self):
+        from utility_handlers import send_weather
+
+        message = AsyncMock()
+        mock_api = AsyncMock()
+
+        async def fake_get(url, cache_response=True):
+            if "geocoding-api" in url:
+                if "Paris" in url:
+                    return {
+                        "results": [
+                            {"name": "Paris", "country": "United States", "admin1": "Texas", "latitude": 33.66, "longitude": -95.55},
+                            {"name": "Paris", "country": "France", "admin1": "Ile-de-France", "latitude": 48.85, "longitude": 2.35},
+                        ]
+                    }
+                return {"results": []}
+            if "api.open-meteo.com" in url:
+                return {
+                    "current": {
+                        "temperature_2m": 21.5,
+                        "apparent_temperature": 22.0,
+                        "wind_speed_10m": 12.0,
+                        "weather_code": 0,
+                        "relative_humidity_2m": 55,
+                    }
+                }
+            return None
+
+        mock_api.get.side_effect = fake_get
+
+        # Test "Paris, France" correctly matches France result instead of Texas
+        await send_weather(message, mock_api, "Paris, France")
+        message.reply_text.assert_called_once()
+        text = message.reply_text.call_args[0][0]
+        self.assertIn("France", text)
+        self.assertIn("21.5", text)
+        self.assertIn("Feels like: 22.0", text)
+        self.assertIn("Clear sky", text)
+
+
 if __name__ == "__main__":
     unittest.main()
 

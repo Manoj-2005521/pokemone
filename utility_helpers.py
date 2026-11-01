@@ -67,7 +67,11 @@ def _fx_code(value: str, currencies: Optional[dict[str, str]] = None) -> str:
 
 
 def weather_description(code: Any) -> str:
-    return WEATHER_CODE.get(code, f"Unknown condition (code {code})")
+    try:
+        code_int = int(code)
+    except (TypeError, ValueError):
+        code_int = code
+    return WEATHER_CODE.get(code_int, f"Unknown condition (code {code})")
 
 
 def parse_fx_input(

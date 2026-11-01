@@ -257,19 +257,56 @@ async def send_fx_conversion(message: Message, api: PokeAPI, args: Sequence[str]
 
 
 async def send_weather(message: Message, api: PokeAPI, city: str) -> None:
-    geo_url = "https://geocoding-api.open-meteo.com/v1/search?" + urlencode({
-        "name": city,
-        "count": 1,
-        "language": "en",
-        "format": "json",
-    })
-    geocoding = await api.get(geo_url)
-    locations = (geocoding or {}).get("results") or []
-    if not locations:
-        await message.reply_text("❌ City not found. Try a city name with its country, such as /weather Paris France.")
+    raw_query = city.strip()
+    if not raw_query:
+        await message.reply_text("❌ Please specify a city. Example: /weather Chennai")
         return
 
+    # Handle comma-separated input (e.g. "Paris, France" or "London, UK")
+    if "," in raw_query:
+        parts = [p.strip() for p in raw_query.split(",") if p.strip()]
+        city_name = parts[0]
+        hint = " ".join(parts[1:]).lower()
+    else:
+        city_name = raw_query
+        hint = None
+
+    async def fetch_geocoding(name: str):
+        geo_url = "https://geocoding-api.open-meteo.com/v1/search?" + urlencode({
+            "name": name,
+            "count": 10,
+            "language": "en",
+            "format": "json",
+        })
+        data = await api.get(geo_url)
+        return (data or {}).get("results") or []
+
+    locations = await fetch_geocoding(city_name)
+
+    # If no results and no comma was provided, try splitting off the last word as a country or state hint
+    # (e.g. "Paris France" -> search "Paris", filter by "France")
+    if not locations and " " in raw_query and not hint:
+        c_part, _, h_part = raw_query.rpartition(" ")
+        if c_part.strip():
+            hint = h_part.lower()
+            locations = await fetch_geocoding(c_part.strip())
+
+    if not locations:
+        await message.reply_text("❌ City not found. Try a city name like /weather Paris or /weather London, UK.")
+        return
+
+    # Pick the best matching location (matching country/admin hint if provided)
     location = locations[0]
+    if hint:
+        for loc in locations:
+            country = (loc.get("country") or "").lower()
+            country_code = (loc.get("country_code") or "").lower()
+            admin1 = (loc.get("admin1") or "").lower()
+            admin2 = (loc.get("admin2") or "").lower()
+            if hint in country or hint == country_code or hint in admin1 or hint in admin2:
+                location = loc
+                break
+
     latitude, longitude = location.get("latitude"), location.get("longitude")
     if latitude is None or longitude is None:
         await message.reply_text("❌ Location coordinates are unavailable.")
@@ -289,15 +326,18 @@ async def send_weather(message: Message, api: PokeAPI, city: str) -> None:
     place_parts = [location.get("name"), location.get("admin1"), location.get("country")]
     place = ", ".join(dict.fromkeys(part for part in place_parts if part))
     temperature = current.get("temperature_2m", current.get("temperature"))
+    apparent = current.get("apparent_temperature")
     wind = current.get("wind_speed_10m", current.get("windspeed"))
     code = current.get("weather_code", current.get("weathercode"))
     humidity = current.get("relative_humidity_2m")
     lines = [
-        f"🌦️ <b>Weather: {esc(place or city)}</b>",
+        f"🌦️ <b>Weather: {esc(place or city_name)}</b>",
         f"Condition: {esc(weather_description(code))}",
         f"Temperature: {temperature}°C" if temperature is not None else "Temperature: unavailable",
-        f"Wind: {wind} km/h" if wind is not None else "Wind: unavailable",
     ]
+    if apparent is not None:
+        lines.append(f"Feels like: {apparent}°C")
+    lines.append(f"Wind: {wind} km/h" if wind is not None else "Wind: unavailable")
     if humidity is not None:
         lines.append(f"Humidity: {humidity}%")
     await message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
