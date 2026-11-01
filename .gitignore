@@ -1,0 +1,28 @@
+# Virtual environments
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Local databases and backups
+*.db
+*.sqlite
+*.sqlite3
+backups/
+
+# Local editor settings
+.vscode/
+.idea/
+
+# Logs and test artifacts
+*.log
+.pytest_cache/
+.coverage
+htmlcov/
