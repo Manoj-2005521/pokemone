@@ -39,6 +39,8 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaPhoto,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
 )
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
@@ -261,6 +263,43 @@ def evolution_stages(chain: dict) -> list[list[str]]:
 # UI Builders
 # callback_data format: section|payload...
 # ----------------------------
+def persistent_reply_kb() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [
+            [KeyboardButton("🌿 Catch Wild"), KeyboardButton("⚔️ Battle Arena")],
+            [KeyboardButton("📦 My Box"), KeyboardButton("🎒 Bag & Shop")],
+            [KeyboardButton("🏆 Gym Badges"), KeyboardButton("❓ Who's That Pokémon")],
+            [KeyboardButton("🌦️ Weather"), KeyboardButton("📜 Menu & Help")],
+        ],
+        resize_keyboard=True,
+    )
+
+
+def welcome_menu_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("🌿 Catch Wild", callback_data="menu|wild"),
+            InlineKeyboardButton("⚔️ Battle Arena", callback_data="menu|battle"),
+        ],
+        [
+            InlineKeyboardButton("📦 My Box", callback_data="menu|box"),
+            InlineKeyboardButton("🎒 Bag & Shop", callback_data="menu|bag"),
+        ],
+        [
+            InlineKeyboardButton("🏆 Gym Badges", callback_data="menu|gym"),
+            InlineKeyboardButton("❓ Mystery Trivia", callback_data="menu|wtp"),
+        ],
+        [
+            InlineKeyboardButton("🏪 Market", callback_data="menu|market"),
+            InlineKeyboardButton("🤝 Trade", callback_data="menu|trade"),
+        ],
+        [
+            InlineKeyboardButton("🌦️ Weather", callback_data="utils|weather"),
+            InlineKeyboardButton("🎮 All Pokémon Features", callback_data="menu|pokemon"),
+        ],
+    ])
+
+
 def main_menu_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
@@ -682,6 +721,7 @@ async def open_pokemon(
 # ----------------------------
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update_message(update)
+    chat = update.effective_chat
     if message is None:
         return
 
@@ -690,15 +730,42 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context_user_data(context)["_uid"] = uid(update)
 
     text = (
-        "<b>⚡ POKÉDEX GO</b>\n\n"
-        "Use the menu below or type:\n"
-        "<code>/pokemon pikachu</code> or <code>/pokemon 25</code>\n"
-        "<code>/move flamethrower</code>, <code>/ability levitate</code>\n"
-        "<code>/where pikachu</code>, <code>/berry oran</code>, <code>/team list</code>\n"
-        "<code>/dex</code>, <code>/iv pikachu speed 31 252 50 jolly</code>\n"
-        "<code>/challenge</code>, <code>/quiz</code>, <code>/weather Chennai</code>\n"
+        "✨ <b>Welcome to Pokédex Go!</b> 🎮\n\n"
+        "Embark on your Pokémon journey! You don't have to remember complex commands — "
+        "just tap any button below to start playing immediately:\n\n"
+        "• 🌿 <b>Catch Wild:</b> Encounter wild Pokémon and throw Pokéballs\n"
+        "• ⚔️ <b>Battle Arena:</b> Turn-based arena fights with real-time health bars\n"
+        "• 🏆 <b>Gym Badges:</b> Defeat all 8 Kanto Gym Leaders to earn badges\n"
+        "• ❓ <b>Mystery Trivia:</b> Play Who's That Pokémon silhouette trivia\n"
+        "• 📦 <b>Box & Bag:</b> View your collection, items, and PokéMart\n"
+        "• 🏪 <b>Market & Trade:</b> Buy, sell, or trade Pokémon with trainers\n\n"
+        "<i>Tap a button below to begin:</i>"
     )
-    await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=main_menu_kb())
+    await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=welcome_menu_kb())
+    if chat and chat.type == "private":
+        await message.reply_text(
+            "👇 <b>Quick Buttons:</b> Use the persistent buttons at the bottom of your screen anytime!",
+            parse_mode=ParseMode.HTML,
+            reply_markup=persistent_reply_kb(),
+        )
+
+
+async def menu_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update_message(update)
+    chat = update.effective_chat
+    if message is None:
+        return
+    text = (
+        "🎮 <b>Pokédex Go — Quick Menu</b>\n\n"
+        "Tap any button below to jump into the action:"
+    )
+    await message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=welcome_menu_kb())
+    if chat and chat.type == "private":
+        await message.reply_text(
+            "👇 <i>Quick navigation buttons:</i>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=persistent_reply_kb(),
+        )
 
 
 async def help_cmd(update: Update, _: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1987,9 +2054,9 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             await show_callback_text(
                 q,
                 message,
-                "<b>⚡ POKÉDEX GO</b>\nChoose a section:",
+                "🎮 <b>Pokédex Go — Main Menu</b>\nChoose a feature below:",
                 parse_mode=ParseMode.HTML,
-                reply_markup=main_menu_kb(),
+                reply_markup=welcome_menu_kb(),
             )
             return
 
@@ -2461,6 +2528,30 @@ async def text_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         return
 
     user_data = context_user_data(context)
+
+    # Persistent keyboard button routing
+    reply_btn_map = {
+        "🌿 Catch Wild": wild_cmd,
+        "⚔️ Battle Arena": battle_cmd,
+        "📦 My Box": box_cmd,
+        "🎒 Bag & Shop": bag_cmd,
+        "🏆 Gym Badges": gym_cmd,
+        "❓ Who's That Pokémon": wtp_cmd,
+        "📜 Menu & Help": menu_cmd,
+    }
+    if text in reply_btn_map:
+        await reply_btn_map[text](update, context)
+        return
+
+    if text == "🌦️ Weather":
+        user_data["utility_mode"] = "weather"
+        await message.reply_text(
+            "🌦️ <b>Weather Finder</b>\nPlease type a city name (e.g. <code>Chennai</code>, <code>Paris</code>, or <code>London, UK</code>):",
+            parse_mode=ParseMode.HTML,
+            reply_markup=utility_cancel_kb(),
+        )
+        return
+
     utility_mode = user_data.pop("utility_mode", None)
     utility_prompt = user_data.pop("utility_prompt", None)
     if utility_prompt:
@@ -2668,6 +2759,7 @@ def build_app() -> Application:
 
     # Commands
     app.add_handler(CommandHandler("start", start_cmd))
+    app.add_handler(CommandHandler("menu", menu_cmd))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("pokemon", pokemon_cmd))
     app.add_handler(CommandHandler("random", random_cmd))
