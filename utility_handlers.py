@@ -2,7 +2,7 @@ import os
 import re
 from datetime import date
 from typing import Optional, Sequence
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, quote_plus, urlencode
 
 import httpx
 from telegram import Message
@@ -256,6 +256,48 @@ async def send_fx_conversion(message: Message, api: PokeAPI, args: Sequence[str]
     await message.reply_text(f"💱 {amount:g} {source} = {result:.4f} {target}")
 
 
+async def _send_wttr_weather(message: Message, api: PokeAPI, raw_query: str) -> bool:
+    try:
+        encoded_city = quote_plus(raw_query.strip())
+        wttr_url = f"https://wttr.in/{encoded_city}?format=j1"
+        data = await api.get(wttr_url, cache_response=False)
+        if not data or not isinstance(data, dict):
+            return False
+        conditions = data.get("current_condition") or []
+        if not conditions:
+            return False
+        current = conditions[0]
+        area = (data.get("nearest_area") or [{}])[0]
+        area_name = (area.get("areaName") or [{}])[0].get("value") or raw_query
+        country = (area.get("country") or [{}])[0].get("value")
+        region = (area.get("region") or [{}])[0].get("value")
+
+        place_parts = [area_name, region, country]
+        place = ", ".join(dict.fromkeys(p for p in place_parts if p))
+
+        temp = current.get("temp_C")
+        feels_like = current.get("FeelsLikeC")
+        wind = current.get("windspeedKmph")
+        humidity = current.get("humidity")
+        desc_list = current.get("weatherDesc") or []
+        desc = desc_list[0].get("value") if desc_list else "Clear"
+
+        lines = [
+            f"🌦️ <b>Weather: {esc(place or raw_query)}</b>",
+            f"Condition: {esc(desc.strip())}",
+            f"Temperature: {temp}°C" if temp is not None else "Temperature: unavailable",
+        ]
+        if feels_like is not None:
+            lines.append(f"Feels like: {feels_like}°C")
+        lines.append(f"Wind: {wind} km/h" if wind is not None else "Wind: unavailable")
+        if humidity is not None:
+            lines.append(f"Humidity: {humidity}%")
+        await message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+        return True
+    except Exception:
+        return False
+
+
 async def send_weather(message: Message, api: PokeAPI, city: str) -> None:
     raw_query = city.strip()
     if not raw_query:
@@ -292,6 +334,8 @@ async def send_weather(message: Message, api: PokeAPI, city: str) -> None:
             locations = await fetch_geocoding(c_part.strip())
 
     if not locations:
+        if await _send_wttr_weather(message, api, raw_query):
+            return
         await message.reply_text("❌ City not found. Try a city name like /weather Paris or /weather London, UK.")
         return
 
@@ -309,6 +353,8 @@ async def send_weather(message: Message, api: PokeAPI, city: str) -> None:
 
     latitude, longitude = location.get("latitude"), location.get("longitude")
     if latitude is None or longitude is None:
+        if await _send_wttr_weather(message, api, raw_query):
+            return
         await message.reply_text("❌ Location coordinates are unavailable.")
         return
     weather_url = "https://api.open-meteo.com/v1/forecast?" + urlencode({
@@ -320,6 +366,8 @@ async def send_weather(message: Message, api: PokeAPI, city: str) -> None:
     weather = await api.get(weather_url, cache_response=False)
     current = (weather or {}).get("current") or (weather or {}).get("current_weather")
     if not current:
+        if await _send_wttr_weather(message, api, raw_query):
+            return
         await message.reply_text("❌ Current weather is unavailable right now.")
         return
 
