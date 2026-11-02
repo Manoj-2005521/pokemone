@@ -6,7 +6,7 @@ from typing import Optional, Sequence
 from urllib.parse import quote, quote_plus, urlencode
 
 import httpx
-from telegram import Message
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Message
 from telegram.constants import ParseMode
 
 from api_client import PokeAPI
@@ -22,70 +22,156 @@ from utility_helpers import (
 )
 
 
+def _detect_topic_emoji(description: str, title: str) -> str:
+    desc = (description or "").lower()
+    t = (title or "").lower()
+    combined = f"{desc} {t}"
+    if any(k in combined for k in [
+        "born", "politician", "actor", "actress", "singer", "player", "athlete",
+        "scientist", "author", "footballer", "founder", "businessman", "president",
+        "musician", "philosopher", "inventor", "painter", "director", "composer", "celebrity"
+    ]):
+        return "👤"
+    if any(k in combined for k in [
+        "smartphone", "console", "software", "product", "computer", "device",
+        "automobile", "car", "hardware", "technology", "phone", "chipset", "gpu", "cpu", "brand"
+    ]):
+        return "📱"
+    if any(k in combined for k in [
+        "city", "country", "capital", "island", "mountain", "river", "state",
+        "region", "lake", "ocean", "monument", "temple", "tower", "castle"
+    ]):
+        return "🏛️"
+    if any(k in combined for k in [
+        "film", "movie", "video game", "manga", "anime", "novel", "series",
+        "album", "song", "franchise", "comic", "character", "pokemon"
+    ]):
+        return "🎬"
+    return "📚"
+
+
 async def send_wikipedia(message: Message, api: PokeAPI, query: str) -> None:
-    # Try exact query first, then fuzzy search fallback
-    url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + quote(query.replace(" ", "_"), safe="")
-    data = await api.get(url)
+    raw_query = query.strip()
+    if not raw_query:
+        await message.reply_text("Please enter a topic to search.\nExample: /wiki Elon Musk or /wiki iPhone 16")
+        return
+
+    data = None
+    canonical_url = None
+
+    # Step 1: OpenSearch (Wikipedia's autocomplete & entity index)
+    # Most accurate for personalities, brand products, movies, concepts, and common typos
+    opensearch_url = "https://en.wikipedia.org/w/api.php?" + urlencode({
+        "action": "opensearch",
+        "search": raw_query,
+        "limit": 5,
+        "namespace": 0,
+        "format": "json",
+    })
+    os_res = await api.get(opensearch_url)
+    if isinstance(os_res, list) and len(os_res) > 1 and os_res[1]:
+        candidates = os_res[1]
+        urls = os_res[3] if len(os_res) > 3 else []
+        for i, candidate in enumerate(candidates):
+            slug = quote(candidate.replace(" ", "_"), safe="")
+            summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{slug}"
+            candidate_data = await api.get(summary_url)
+            if candidate_data and not candidate_data.get("type", "").endswith("/not_found"):
+                if candidate_data.get("type") != "disambiguation" or i == len(candidates) - 1:
+                    data = candidate_data
+                    if i < len(urls) and urls[i]:
+                        canonical_url = urls[i]
+                    break
+
+    # Step 2: Full-text search fallback (if OpenSearch gave no valid summary)
     if not data or data.get("type", "").endswith("/not_found"):
-        # Try Wikipedia's search API to find the closest article
         search_url = "https://en.wikipedia.org/w/api.php?" + urlencode({
             "action": "query",
             "list": "search",
-            "srsearch": query,
-            "srlimit": 1,
+            "srsearch": raw_query,
+            "srlimit": 3,
             "format": "json",
         })
         search_data = await api.get(search_url)
-        best = ((search_data or {}).get("query", {}).get("search") or [None])[0]
-        if not best:
-            await message.reply_text(
-                "❌ No Wikipedia article found for <b>" + esc(query) + "</b>.\nTry rephrasing your search.",
-                parse_mode=ParseMode.HTML,
-            )
-            return
-        slug = best["title"].replace(" ", "_")
-        url = "https://en.wikipedia.org/api/rest_v1/page/summary/" + quote(slug, safe="")
-        data = await api.get(url)
-        if not data or data.get("type", "").endswith("/not_found"):
-            await message.reply_text("❌ Could not load Wikipedia article.", parse_mode=ParseMode.HTML)
-            return
+        search_items = (search_data or {}).get("query", {}).get("search") or []
+        for item in search_items:
+            slug = quote(item.get("title", "").replace(" ", "_"), safe="")
+            if not slug:
+                continue
+            summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{slug}"
+            item_data = await api.get(summary_url)
+            if item_data and not item_data.get("type", "").endswith("/not_found"):
+                data = item_data
+                break
 
-    title, extract, page, thumbnail = wiki_summary_parts(data, query)
+    # Step 3: Direct slug query as last resort
+    if not data or data.get("type", "").endswith("/not_found"):
+        slug = quote(raw_query.replace(" ", "_"), safe="")
+        summary_url = f"https://en.wikipedia.org/api/rest_v1/page/summary/{slug}"
+        direct_data = await api.get(summary_url)
+        if direct_data and not direct_data.get("type", "").endswith("/not_found"):
+            data = direct_data
+
+    # Not found
+    if not data or data.get("type", "").endswith("/not_found"):
+        await message.reply_text(
+            f"❌ No Wikipedia article found for <b>{esc(raw_query)}</b>.\n"
+            "Try checking the spelling or using broader keywords (e.g. <i>/wiki iPhone 16</i> or <i>/wiki Albert Einstein</i>).",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    title, extract, page, thumbnail = wiki_summary_parts(data, raw_query)
     title = title[:120]
+    description = (data.get("description") or "").strip()
+    page_url = canonical_url or page or f"https://en.wikipedia.org/wiki/{quote(title.replace(' ', '_'), safe='')}"
 
-    # Build richer description — up to 900 chars, ending on a sentence boundary
-    if len(extract) > 900:
-        truncated = extract[:897]
+    topic_emoji = _detect_topic_emoji(description, title)
+
+    # Word count and reading time estimate
+    word_count = len(extract.split())
+    read_sec = max(1, round(word_count / 4))
+    read_label = f"{read_sec // 60}m {read_sec % 60}s" if read_sec >= 60 else f"{read_sec}s"
+
+    # Telegram photo captions have a 1024-character hard limit
+    max_extract_len = 650 if thumbnail else 1500
+    if len(extract) > max_extract_len:
+        truncated = extract[:max_extract_len - 3]
         last_dot = truncated.rfind(". ")
-        if last_dot > 400:
+        if last_dot > (max_extract_len // 2):
             extract = truncated[:last_dot + 1]
         else:
             extract = truncated.rstrip() + "…"
 
-    # Get the page description (short subtitle) if available
-    description = (data.get("description") or "").strip()
-
-    lines = [f"📚 <b>{esc(title)}</b>"]
+    lines = [f"{topic_emoji} <b>{esc(title)}</b>"]
     if description:
         lines.append(f"<i>{esc(description.capitalize())}</i>")
     lines.append("")
     lines.append(esc(extract))
-
-    # Reading time estimate
-    word_count = len(extract.split())
-    read_sec = max(1, round(word_count / 4))
-    read_label = f"{read_sec // 60}m {read_sec % 60}s" if read_sec >= 60 else f"{read_sec}s"
-    if page:
-        lines.append("\n⏱ ~" + read_label + " read  •  🌍 <a href=\"" + esc(page) + "\">Open full article</a>")
-    else:
-        lines.append("\n⏱ ~" + read_label + " read")
+    lines.append("")
+    lines.append(f"⏱ ~{read_label} read  •  🔗 <a href=\"{esc(page_url)}\">Read full article</a>")
 
     text = "\n".join(lines)
 
+    # Prominent inline button to open the actual Wikipedia article
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📖 Open Full Article on Wikipedia", url=page_url)]
+    ])
+
     if thumbnail:
-        await message.reply_photo(photo=thumbnail, caption=text, parse_mode=ParseMode.HTML)
+        await message.reply_photo(
+            photo=thumbnail,
+            caption=text[:1024],
+            reply_markup=keyboard,
+            parse_mode=ParseMode.HTML,
+        )
     else:
-        await message.reply_text(text, parse_mode=ParseMode.HTML, disable_web_page_preview=True)
+        await message.reply_text(
+            text[:4096],
+            reply_markup=keyboard,
+            parse_mode=ParseMode.HTML,
+            disable_web_page_preview=True,
+        )
 
 
 # Part-of-speech emoji map
