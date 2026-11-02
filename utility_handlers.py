@@ -1,4 +1,5 @@
 import os
+import random
 import re
 from datetime import date
 from typing import Optional, Sequence
@@ -221,10 +222,37 @@ async def send_quote(message: Message, api: PokeAPI) -> None:
     )
 
 
+_FALLBACK_FACTS = [
+    "Honey never spoils. Archaeologists have found pots of honey in ancient Egyptian tombs that are over 3,000 years old and still perfectly edible.",
+    "Octopuses have three hearts, and their blood is copper-based and blue.",
+    "A day on Venus is longer than a year on Venus: it takes Venus longer to rotate once on its axis than to complete one orbit around the Sun.",
+    "Bananas are naturally radioactive because they contain high amounts of potassium-40.",
+    "The footprints left on the Moon by Apollo astronauts will stay there for at least 100 million years because there is no wind or water to erode them.",
+    "Crows have been shown to remember human faces and can hold grudges against specific people for years.",
+    "Sharks existed before trees; sharks date back over 400 million years, while the earliest trees emerged around 350 million years ago.",
+    "The heart of a blue whale is so large that a human toddler could swim through its arteries.",
+    "Wombat feces are cube-shaped, which stops them from rolling away when marking territory on elevated surfaces.",
+    "Cleopatra lived closer in time to the Moon landing than to the construction of the Great Pyramid of Giza.",
+    "Nintendo was founded in 1889 as a handmade hanafuda playing card company in Kyoto, Japan.",
+    "Pikachu's name is a portmanteau of two Japanese sounds: 'pika' (the crackle of electricity) and 'chu' (the squeak of a mouse).",
+    "Butterflies taste with their feet to test if a leaf is edible before laying eggs on it.",
+    "There are more trees on Earth (estimated 3 trillion) than there are stars in the Milky Way galaxy (100–400 billion).",
+    "Water can boil and freeze at the same time; this phenomenon is called the 'triple point'.",
+    "A cloud can weigh more than a million pounds (around 500,000 kilograms).",
+    "Koalas sleep up to 20 hours a day to conserve energy while digesting toxic eucalyptus leaves.",
+    "Sea otters hold hands while they sleep so they don't drift away from each other.",
+]
+
+
 async def send_fact(message: Message, api: PokeAPI) -> None:
     data = await api.get("https://uselessfacts.jsph.pl/api/v2/facts/random?language=en", cache_response=False)
-    fact = data.get("text") if data else None
-    await message.reply_text(f"🧠 {fact[:3500]}" if fact else "❌ Fact service is unavailable right now.")
+    fact = (data.get("text") or "").strip() if isinstance(data, dict) else ""
+    if not fact:
+        data = await api.get("https://catfact.ninja/fact", cache_response=False)
+        fact = (data.get("fact") or "").strip() if isinstance(data, dict) else ""
+    if not fact:
+        fact = random.choice(_FALLBACK_FACTS)
+    await message.reply_text(f"🧠 {fact[:3500]}")
 
 
 async def _find_apod_fallback_image(
@@ -341,6 +369,8 @@ async def send_apod(message: Message, api: PokeAPI) -> None:
 
 
 async def send_fx_conversion(message: Message, api: PokeAPI, args: Sequence[str]) -> None:
+    if isinstance(args, str):
+        args = args.split()
     if len(args) == 1 and args[0].strip().casefold() in ("currencies", "list"):
         currencies = await api.get(FX_CURRENCIES_URL)
         if not isinstance(currencies, dict) or not currencies:

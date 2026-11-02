@@ -12,7 +12,7 @@ from database import cache_get, cache_set
 
 logger = logging.getLogger(__name__)
 API_BASE = "https://pokeapi.co/api/v2"
-USER_AGENT = "PokedexGo/1.0 (Telegram bot; contact via Telegram)"
+USER_AGENT = "PokedexGo/1.0 (https://github.com/Manoj-2005521/pokemone; bot@pokedex.internal) httpx/0.28"
 MAX_RETRY_DELAY_SEC = 5.0
 
 
